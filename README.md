@@ -1,38 +1,59 @@
-This is a [Next.js](https://nextjs.org/) project bootstrapped with [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app).
+# Dynamic import + barrel file problem
 
-## Getting Started
+Be careful with barrel files and dynamic imports!
 
-First, run the development server:
+## Problem
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
+This is a problematic structure:
+
+```
+modules/
+  layout/
+    components/
+      PageLayout.tsx
+    layouts/
+      index.ts
+      Layout1.tsx
+      Layout2.tsx
+    index.ts (exposes PageLayout, Layout1, Layout2)
+pages/
+  _app.tsx (import PageLayout from `modules/layout` barrel)
+  page-1.tsx
+  page-2.tsx
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+`modules/layout/index.ts` is a barrel file that exports these for convenience:
 
-You can start editing the page by modifying `pages/index.tsx`. The page auto-updates as you edit the file.
+```js
+// modules/layout/index.ts
+export { PageLayout } from './components/PageLayout';
+export * from './layouts';
+```
 
-[API routes](https://nextjs.org/docs/api-routes/introduction) can be accessed on [http://localhost:3000/api/hello](http://localhost:3000/api/hello). This endpoint can be edited in `pages/api/hello.ts`.
+`_app.tsx` then accidentally imports from the barrel file (rather than `PageLayout` directly):
 
-The `pages/api` directory is mapped to `/api/*`. Files in this directory are treated as [API routes](https://nextjs.org/docs/api-routes/introduction) instead of React pages.
+```js
+// pages/_app.tsx
+import { PageLayout } from '../modules/layout'; // oops!
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/basic-features/font-optimization) to automatically optimize and load Inter, a custom Google Font.
+The problem is that `modules/layout/index.ts` also imports the layout files themselves (`Layout1` and `Layout2`) since the barrel file is accessing them.
 
-## Learn More
+This causes both layouts to be bundled together in the app chunk (`.next/static/chunk/pages/_app-.....js`) and the dynamic imports are effectively rendered useless here 😱
 
-To learn more about Next.js, take a look at the following resources:
+`PageLayout` is supposed to defer loading each layout until they are actually needed, and split them out into their own separate chunks, to optimize the first load of the app. But with the barrel, it's not working:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+<img src="./oops.png" />
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js/) - your feedback and contributions are welcome!
+## Solution(s):
 
-## Deploy on Vercel
+- In `_app.tsx`, don't import from the barrel 🤦‍♀️ Re-evaluate if the barrel is even needed.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```js
+// pages/_app.tsx
+import { PageLayout } from '../modules/layout/components/PageLayout'; // much better!
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/deployment) for more details.
+- Or mark `{ "sideEffects": false }` inside the root package.json (ref: https://github.com/vercel/next.js/issues/27814)
+
+<img src="./chunked-properly.png" />
